@@ -422,6 +422,7 @@ async deleteUser(userId) {
       return result && result.affectedRows > 0;
     } catch (e) {
       await connection.rollback();
+      console.error('deleteUser failed:', e);
       throw new StatusCodeError('unable to delete user', 500);
     }
   } finally {
