@@ -130,6 +130,7 @@ class DB {
     }
   }
 
+
   async getOrders(user, page = 1) {
     const connection = await this.getConnection();
     try {
@@ -360,6 +361,74 @@ class DB {
     const [rows] = await connection.execute(`SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?`, [config.db.connection.database]);
     return rows.length > 0;
   }
+
+  async listUsers({ page, limit, name }) {
+  const connection = await this.getConnection();
+  try {
+    const offset = (page - 1) * limit;
+    name = (name || '*').replace(/\*/g, '%');
+
+    let users = await this.query(
+      connection,
+      `SELECT id, name, email
+       FROM user
+       WHERE name LIKE ?
+       ORDER BY id ASC
+       LIMIT ${limit + 1} OFFSET ${offset}`,
+      [name]
+    );
+
+    const more = users.length > limit;
+    if (more) {
+      users = users.slice(0, limit);
+    }
+
+    const ids = users.map(u => u.id);
+    let rolesByUser = {};
+    if (ids.length > 0) {
+      const roleRows = await this.query(
+        connection,
+        `SELECT userId, role, objectId
+         FROM userRole
+         WHERE userId IN (${ids.join(',')})`
+      );
+      rolesByUser = roleRows.reduce((acc, r) => {
+        (acc[r.userId] ||= []).push({ role: r.role, objectId: r.objectId || undefined });
+        return acc;
+      }, {});
+    }
+
+    const shaped = users.map(u => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      roles: rolesByUser[u.id] || [],
+    }));
+
+    return { users: shaped, more };
+  } finally {
+    connection.end();
+  }
+}
+async deleteUser(userId) {
+  const connection = await this.getConnection();
+  try {
+    await connection.beginTransaction();
+    try {
+      await this.query(connection, `DELETE FROM userRole WHERE userId = ?`, [userId]);
+      await this.query(connection, `DELETE FROM auth WHERE userId = ?`, [userId]);
+      const result = await this.query(connection, `DELETE FROM user WHERE id = ?`, [userId]);
+      await connection.commit();
+      return result && result.affectedRows > 0;
+    } catch (e) {
+      await connection.rollback();
+      throw new StatusCodeError('unable to delete user', 500);
+    }
+  } finally {
+    connection.end();
+  }
+}
+
 }
 
 const db = new DB();

@@ -6,6 +6,23 @@ const { authRouter, setAuth } = require('./authRouter.js');
 const userRouter = express.Router();
 
 userRouter.docs = [
+
+    {
+    method: 'GET',
+    path: '/api/user?page=1&limit=10&name=*',
+    requiresAuth: true,
+    description: 'Gets a paginated list of users (admin only). Wildcard name filter uses *.',
+    example: `curl -X GET "localhost:3000/api/user?page=1&limit=10&name=*bob*" -H 'Authorization: Bearer tttttt'`,
+    response: { users: [{ id: 3, name: 'Kai Chen', email: 'd@jwt.com', roles: [{ role: 'diner' }] }], more: true },
+  },
+  {
+    method: 'DELETE',
+    path: '/api/user/:userId',
+    requiresAuth: true,
+    description: 'Deletes a user (admin only)',
+    example: `curl -X DELETE localhost:3000/api/user/3 -H 'Authorization: Bearer tttttt'`,
+    response: {},
+  },
   {
     method: 'GET',
     path: '/api/user/me',
@@ -23,6 +40,45 @@ userRouter.docs = [
     response: { user: { id: 1, name: '常用名字', email: 'a@jwt.com', roles: [{ role: 'admin' }] }, token: 'tttttt' },
   },
 ];
+
+// listUsers
+userRouter.get(
+  '/',
+  authRouter.authenticateToken,
+  asyncHandler(async (req, res) => {
+    // Admin only
+    if (!req.user.isRole(Role.Admin)) {
+      return res.status(403).json({ message: 'forbidden' });
+    }
+
+    // Spec shows 1-based page coming from client
+    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+    const limit = Math.max(parseInt(req.query.limit || '10', 10), 1);
+    const nameFilter = (req.query.name || '*').trim();
+
+    const { users, more } = await DB.listUsers({ page, limit, name: nameFilter });
+    res.json({ users, more });
+  })
+);
+
+// deleteUser
+userRouter.delete(
+  '/:userId',
+  authRouter.authenticateToken,
+  asyncHandler(async (req, res) => {
+    if (!req.user.isRole(Role.Admin)) {
+      return res.status(403).json({ message: 'forbidden' });
+    }
+
+    const userId = Number(req.params.userId);
+    const deleted = await DB.deleteUser(userId);
+    if (!deleted) {
+      return res.status(404).json({ message: 'not found' });
+    }
+    res.status(204).send();
+  })
+);
+
 
 // getUser
 userRouter.get(
