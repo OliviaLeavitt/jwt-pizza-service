@@ -1,29 +1,16 @@
 const request = require('supertest');
 const app = require('../src/service');
-const { Role, DB } = require('../src/database/database');
+const { Role } = require('../src/database/database');
 
-// helpers
+// ---------- helpers ----------
 const PWD = 'toomanysecrets';
 const rand = () => Math.random().toString(36).slice(2, 10);
 const emailFor = (label) => `${label}-${rand()}@jwt.com`;
 
-// create a user directly in DB
-async function createUser({ roles = [] } = {}) {
-  const user = await DB.addUser({
-    name: `u-${rand()}`,
-    email: emailFor(roles.length ? 'admin' : 'user'),
-    password: PWD,
-    roles,
-  });
-  return { ...user, password: PWD };
-}
-
-// login via auth endpoint
 async function login(email, password = PWD) {
   return request(app).put('/api/auth').send({ email, password });
 }
 
-// wrapper that always sets Authorization header
 function authAgent(token) {
   const agent = request(app);
   const withAuth = (req) => req.set('Authorization', `Bearer ${token}`);
@@ -35,7 +22,6 @@ function authAgent(token) {
   };
 }
 
-// quick assertions for status codes
 const expectOk = (res) => expect(res.status).toBe(200);
 const expectUnauthorized = (res) => {
   expect(res.status).toBe(401);
@@ -44,85 +30,112 @@ const expectUnauthorized = (res) => {
 
 jest.setTimeout(20000);
 
-// tests
+// ---------- tests ----------
+
+// GET /api/user/me requires auth
 test('GET /api/user/me returns 401 without token', async () => {
-    // Try to get current user info without logging in
-    // Should return unauthorized
   const res = await request(app).get('/api/user/me');
   expectUnauthorized(res);
 });
 
+// GET /api/user requires auth
+test('GET /api/user returns 401 without token', async () => {
+  const res = await request(app).get('/api/user');
+  expectUnauthorized(res);
+});
+
+// GET /api/user returns 403 for non-admin with token
+test('GET /api/user returns 403 for non-admin', async () => {
+  const reg = await request(app).post('/api/auth').send({
+    name: 'user-' + rand(),
+    email: emailFor('user'),
+    password: PWD,
+  });
+
+  const res = await request(app)
+    .get('/api/user')
+    .set('Authorization', 'Bearer ' + reg.body.token);
+
+  expect(res.status).toBe(403);
+});
+
+// GET /api/user/me returns the logged-in user
 test('GET /api/user/me returns the logged-in user', async () => {
-    // Create a user and log in
-  const seed = await createUser(); 
-  const loginRes = await login(seed.email, seed.password);
+  const name = 'user-' + rand();
+  const email = emailFor('me');
+
+  const reg = await request(app).post('/api/auth').send({
+    name,
+    email,
+    password: PWD,
+  });
+  const user = reg.body.user;
+
+  const loginRes = await login(email, PWD);
   expectOk(loginRes);
 
-  // Call /me with the user’s token
-  // Should return that user’s info
   const me = await authAgent(loginRes.body.token).get('/api/user/me');
   expectOk(me);
   expect(me.body).toEqual(
     expect.objectContaining({
-      id: seed.id,
-      name: seed.name,
-      email: seed.email,
+      id: user.id,
+      name,
+      email,
       roles: expect.any(Array),
     })
   );
 });
 
+// PUT /api/user/:id lets a user update themself and returns a NEW token
 test('PUT /api/user/:id lets a user update themself and returns a NEW token', async () => {
-  // Log in as a user
-  const seed = await createUser();
-  const loginRes = await login(seed.email, seed.password);
+  const reg = await request(app).post('/api/auth').send({
+    name: 'self-' + rand(),
+    email: emailFor('self'),
+    password: PWD,
+  });
+  const user = reg.body.user;
+
+  const loginRes = await login(user.email, PWD);
   expectOk(loginRes);
   const oldToken = loginRes.body.token;
-  const me = authAgent(oldToken);
 
-  // Update own name/email/password
   const newName = `updated-${rand()}`;
   const newEmail = emailFor('updated');
-  const updateRes = await me
-    .put(`/api/user/${seed.id}`)
+
+  const updateRes = await authAgent(oldToken)
+    .put(`/api/user/${user.id}`)
     .send({ name: newName, email: newEmail, password: PWD });
 
-  // Should succeed and return updated user + new token
   expectOk(updateRes);
-  expect(updateRes.body).toEqual(
-    expect.objectContaining({
-      user: expect.objectContaining({
-        id: seed.id,
-        name: newName,
-        email: newEmail,
-        roles: expect.any(Array),
-      }),
-      token: expect.any(String),
-    })
-  );
+  expect(typeof updateRes.body.token).toBe('string');
+  expect(updateRes.body.token).not.toBe(oldToken);
 
-  // token should change because setAuth() is called after update
-  const newToken = updateRes.body.token;
-  expect(typeof newToken).toBe('string');
-  expect(newToken).not.toBe(oldToken);
-
-  // the new token should auth future calls
-  const meAfter = await authAgent(newToken).get('/api/user/me');
+  const meAfter = await authAgent(updateRes.body.token).get('/api/user/me');
   expectOk(meAfter);
   expect(meAfter.body).toEqual(
-    expect.objectContaining({ id: seed.id, name: newName, email: newEmail })
+    expect.objectContaining({ id: user.id, name: newName, email: newEmail })
   );
 });
 
+// PUT /api/user/:id rejects when another non-admin tries to update you (403)
 test('PUT /api/user/:id rejects when another non-admin tries to update you (403)', async () => {
-  // Make two normal users
-  const victim = await createUser();
-  const attacker = await createUser();
-  const attackerLogin = await login(attacker.email, attacker.password);
+  // victim
+  const victimReg = await request(app).post('/api/auth').send({
+    name: 'victim-' + rand(),
+    email: emailFor('victim'),
+    password: PWD,
+  });
+  const victim = victimReg.body.user;
+
+  // attacker
+  const attackerReg = await request(app).post('/api/auth').send({
+    name: 'attacker-' + rand(),
+    email: emailFor('attacker'),
+    password: PWD,
+  });
+  const attackerLogin = await login(attackerReg.body.user.email, PWD);
   expectOk(attackerLogin);
 
-  // Attacker tries to update victim’s info
-  // Should fail with 403 unauthorized
   const res = await authAgent(attackerLogin.body.token)
     .put(`/api/user/${victim.id}`)
     .send({ name: 'hax', email: emailFor('hax'), password: PWD });
@@ -131,26 +144,55 @@ test('PUT /api/user/:id rejects when another non-admin tries to update you (403)
   expect(res.body).toMatchObject({ message: 'unauthorized' });
 });
 
-test('PUT /api/user/:id allows an admin to update any user', async () => {
-  // Make an admin and a normal user
-  const adminSeed = await createUser({ roles: [{ role: Role.Admin }] });
-  const userSeed = await createUser();
-  const adminLogin = await login(adminSeed.email, adminSeed.password);
+test('GET /api/user returns list for admin', async () => {
+  // login as seeded admin
+  const adminLogin = await login('a@jwt.com', 'admin');
   expectOk(adminLogin);
 
-  // Admin updates the normal user
+  // create a couple diners so there’s data
+  await request(app).post('/api/auth').send({
+    name: 'user1-' + rand(),
+    email: emailFor('u1'),
+    password: PWD,
+  });
+  await request(app).post('/api/auth').send({
+    name: 'user2-' + rand(),
+    email: emailFor('u2'),
+    password: PWD,
+  });
+
+  // call as admin
+  const res = await authAgent(adminLogin.body.token).get('/api/user');
+  expectOk(res);
+  expect(res.body.length).toBeGreaterThan(0);
+});
+
+// PUT /api/user/:id allows an admin to update any user
+test('PUT /api/user/:id allows an admin to update any user', async () => {
+  // login as seeded admin
+  const adminLogin = await login('a@jwt.com', 'admin');
+  expectOk(adminLogin);
+
+  // register a diner to be updated
+  const targetReg = await request(app).post('/api/auth').send({
+    name: 'target-' + rand(),
+    email: emailFor('target'),
+    password: PWD,
+  });
+  const target = targetReg.body.user;
+
   const newName = `admin-updated-${rand()}`;
   const newEmail = emailFor('admin-updated');
+
   const res = await authAgent(adminLogin.body.token)
-    .put(`/api/user/${userSeed.id}`)
+    .put(`/api/user/${target.id}`)
     .send({ name: newName, email: newEmail, password: PWD });
 
-  // Should succeed and return updated user + token
   expectOk(res);
   expect(res.body).toEqual(
     expect.objectContaining({
       user: expect.objectContaining({
-        id: userSeed.id,
+        id: target.id,
         name: newName,
         email: newEmail,
       }),

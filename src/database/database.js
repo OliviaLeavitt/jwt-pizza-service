@@ -362,54 +362,34 @@ class DB {
     return rows.length > 0;
   }
 
-  async listUsers({ page, limit, name }) {
+  async getUsers(authUser) {
   const connection = await this.getConnection();
   try {
-    const offset = (page - 1) * limit;
-    name = (name || '*').replace(/\*/g, '%');
-
+    // grab all users
     let users = await this.query(
       connection,
-      `SELECT id, name, email
-       FROM user
-       WHERE name LIKE ?
-       ORDER BY id ASC
-       LIMIT ${limit + 1} OFFSET ${offset}`,
-      [name]
+      `SELECT id, name, email FROM user ORDER BY id`
     );
 
-    const more = users.length > limit;
-    if (more) {
-      users = users.slice(0, limit);
+    // include roles if admin (optional)
+    if (authUser?.isRole && authUser.isRole(Role.Admin)) {
+      for (const u of users) {
+        const roles = await this.query(
+          connection,
+          `SELECT role, objectId FROM userRole WHERE userId=?`,
+          [u.id]
+        );
+        u.roles = roles.map(r => ({ role: r.role, objectId: r.objectId }));
+      }
     }
 
-    const ids = users.map(u => u.id);
-    let rolesByUser = {};
-    if (ids.length > 0) {
-      const roleRows = await this.query(
-        connection,
-        `SELECT userId, role, objectId
-         FROM userRole
-         WHERE userId IN (${ids.join(',')})`
-      );
-      rolesByUser = roleRows.reduce((acc, r) => {
-        (acc[r.userId] ||= []).push({ role: r.role, objectId: r.objectId || undefined });
-        return acc;
-      }, {});
-    }
-
-    const shaped = users.map(u => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      roles: rolesByUser[u.id] || [],
-    }));
-
-    return { users: shaped, more };
+    return users;
   } finally {
     connection.end();
   }
 }
+
+
 async deleteUser(userId) {
   const connection = await this.getConnection();
   try {

@@ -46,18 +46,11 @@ userRouter.get(
   '/',
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
-    // Admin only
     if (!req.user.isRole(Role.Admin)) {
       return res.status(403).json({ message: 'forbidden' });
     }
-
-    // Spec shows 1-based page coming from client
-    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
-    const limit = Math.max(parseInt(req.query.limit || '10', 10), 1);
-    const nameFilter = (req.query.name || '*').trim();
-
-    const { users, more } = await DB.listUsers({ page, limit, name: nameFilter });
-    res.json({ users, more });
+    const users = await DB.getUsers(req.user);
+    res.json(users);
   })
 );
 
