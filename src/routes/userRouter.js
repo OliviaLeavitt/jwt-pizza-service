@@ -41,58 +41,66 @@ userRouter.docs = [
   },
 ];
 
-// listUsers
+// GET /api/user - list users
 userRouter.get(
   '/',
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     if (!req.user.isRole(Role.Admin)) {
       res.status(403).json({ message: 'forbidden' });
-      // safe metrics call after sending response
-      try { metrics.userList(false); } catch {}
+      try {
+        metrics.userList(false);
+      } catch (e) {
+        // ignore metric failures
+      }
       return;
     }
     const users = await DB.getUsers(req.user);
     res.json(users);
-    try { metrics.userList(true); } catch {}
+    try {
+      metrics.userList(true);
+    } catch (e) {
+      // ignore metric failures
+    }
   })
 );
 
-// deleteUser
+// DELETE /api/user/:userId - delete user
 userRouter.delete(
   '/:userId',
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     if (!req.user.isRole(Role.Admin)) {
       res.status(403).json({ message: 'forbidden' });
-      try { metrics.userDelete(false); } catch {}
+      try { metrics.userDelete(false); } catch (e) {}
       return;
     }
 
     const userId = Number(req.params.userId);
     const deleted = await DB.deleteUser(userId);
+
     if (!deleted) {
       res.status(404).json({ message: 'not found' });
-      try { metrics.userDelete(false); } catch {}
+      try { metrics.userDelete(false); } catch (e) {}
       return;
     }
 
     res.status(204).send();
-    try { metrics.userDelete(true); } catch {}
+    try { metrics.userDelete(true); } catch (e) {}
   })
 );
 
-// getUser (authenticated)
+// GET /api/user/me - authenticated user info
 userRouter.get(
   '/me',
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     res.json(req.user);
-    try { metrics.userFetch(true); } catch {}
+    try { metrics.userFetch(true); } catch (e) {}
   })
 );
 
-// updateUser
+// PUT /api/user/:userId - update user
 userRouter.put(
   '/:userId',
   authRouter.authenticateToken,
@@ -100,9 +108,10 @@ userRouter.put(
     const { name, email, password } = req.body;
     const userId = Number(req.params.userId);
     const user = req.user;
+
     if (user.id !== userId && !user.isRole(Role.Admin)) {
       res.status(403).json({ message: 'unauthorized' });
-      try { metrics.userUpdate(false); } catch {}
+      try { metrics.userUpdate(false); } catch (e) {}
       return;
     }
 
@@ -110,7 +119,7 @@ userRouter.put(
     const auth = await setAuth(updatedUser);
 
     res.json({ user: updatedUser, token: auth });
-    try { metrics.userUpdate(true); } catch {}
+    try { metrics.userUpdate(true); } catch (e) {}
   })
 );
 
