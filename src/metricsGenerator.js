@@ -7,6 +7,9 @@ let totalAuthAttempts = 0;
 let successfulAuthAttempts = 0;
 let failedAuthAttempts = 0;
 
+// Active users
+let activeUsers = 0;
+
 // Pizza purchase metrics
 let pizzasSold = 0;
 let pizzaFailures = 0;
@@ -36,9 +39,15 @@ function recordAuthAttempt(success) {
   totalAuthAttempts++;
   if (success) {
     successfulAuthAttempts++;
+    activeUsers++; // increment active users on successful login
   } else {
     failedAuthAttempts++;
   }
+}
+
+// Record user logout
+function recordLogout() {
+  if (activeUsers > 0) activeUsers--; // decrement active users
 }
 
 // Record pizza purchases
@@ -137,6 +146,9 @@ function startPeriodicReporting(periodMs = 5000) {
       sendMetricToGrafana('auth_success_total', successfulAuthAttempts, 'sum', '1');
       sendMetricToGrafana('auth_fail_total', failedAuthAttempts, 'sum', '1');
 
+      // Active users
+      sendMetricToGrafana('active_users', activeUsers, 'gauge', '1');
+
       sendMetricToGrafana('pizzas_sold', pizzasSold, 'sum', '1');
       sendMetricToGrafana('pizza_failures', pizzaFailures, 'sum', '1');
       sendMetricToGrafana('pizza_revenue', totalRevenue, 'sum', 'USD');
@@ -148,9 +160,11 @@ function startPeriodicReporting(periodMs = 5000) {
     }
   }, periodMs);
 }
+
 module.exports = {
   requestTracker,
   recordAuthAttempt,
+  recordLogout, // export the logout function
   pizzaPurchase,
   startPeriodicReporting,
 };

@@ -95,7 +95,7 @@ authRouter.delete(
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     await clearAuth(req);
-    metrics.recordAuthAttempt(true);
+    metrics.recordLogout(); 
     res.json({ message: 'logout successful' });
   })
 );
