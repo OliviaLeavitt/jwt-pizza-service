@@ -72,7 +72,10 @@ userRouter.delete(
   asyncHandler(async (req, res) => {
     if (!req.user.isRole(Role.Admin)) {
       res.status(403).json({ message: 'forbidden' });
-      try { metrics.userDelete(false); } catch (e) {}
+      try { metrics.userDelete(false); } 
+      catch (e) {
+        console.error('Metrics failed:', e);
+      }
       return;
     }
 
@@ -81,12 +84,18 @@ userRouter.delete(
 
     if (!deleted) {
       res.status(404).json({ message: 'not found' });
-      try { metrics.userDelete(false); } catch (e) {}
+      try { metrics.userDelete(false); } 
+      catch (e) {
+        console.error('Metrics failed:', e);
+      }
       return;
     }
 
     res.status(204).send();
-    try { metrics.userDelete(true); } catch (e) {}
+    try { metrics.userDelete(true); } 
+    catch (e) {
+      console.error('Metrics failed:', e);
+    }
   })
 );
 
@@ -96,7 +105,10 @@ userRouter.get(
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     res.json(req.user);
-    try { metrics.userFetch(true); } catch (e) {}
+    try { metrics.userFetch(true); } 
+    catch (e) {
+      console.error('Metrics failed:', e);
+    }
   })
 );
 
@@ -111,7 +123,10 @@ userRouter.put(
 
     if (user.id !== userId && !user.isRole(Role.Admin)) {
       res.status(403).json({ message: 'unauthorized' });
-      try { metrics.userUpdate(false); } catch (e) {}
+      try { metrics.userUpdate(false); } 
+      catch (e) {
+        console.error('Metrics failed:', e);
+      }
       return;
     }
 
@@ -119,7 +134,10 @@ userRouter.put(
     const auth = await setAuth(updatedUser);
 
     res.json({ user: updatedUser, token: auth });
-    try { metrics.userUpdate(true); } catch (e) {}
+    try { metrics.userUpdate(true); } 
+    catch (e) {
+      console.error('Metrics failed:', e);
+    }
   })
 );
 
