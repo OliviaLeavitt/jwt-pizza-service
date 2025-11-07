@@ -51,7 +51,7 @@ userRouter.get(
       try {
         metrics.userList(false);
       } catch (e) {
-        // ignore metric failures
+        console.error('Metrics failed:', e);
       }
       return;
     }
@@ -60,7 +60,7 @@ userRouter.get(
     try {
       metrics.userList(true);
     } catch (e) {
-      // ignore metric failures
+      console.error('Metrics failed:', e);
     }
   })
 );
