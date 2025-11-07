@@ -148,7 +148,6 @@ function startPeriodicReporting(periodMs = 5000) {
     }
   }, periodMs);
 }
-
 module.exports = {
   requestTracker,
   recordAuthAttempt,
