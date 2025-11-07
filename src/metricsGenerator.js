@@ -114,7 +114,7 @@ async function sendMetricToGrafana(name, value, type, unit) {
 
     if (!response.ok) {
       const text = await response.text();
-      console.error(`❌ Failed to push ${name}: ${text}`);
+      console.error(`Failed to push ${name}: ${text}`);
     }
   } catch (err) {
     console.error('Error sending metrics:', err);

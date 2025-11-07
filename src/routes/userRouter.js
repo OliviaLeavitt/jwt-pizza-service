@@ -2,12 +2,12 @@ const express = require('express');
 const { asyncHandler } = require('../endpointHelper.js');
 const { DB, Role } = require('../database/database.js');
 const { authRouter, setAuth } = require('./authRouter.js');
+const metrics = require('../metricsGenerator.js');
 
 const userRouter = express.Router();
 
 userRouter.docs = [
-
-    {
+  {
     method: 'GET',
     path: '/api/user?page=1&limit=10&name=*',
     requiresAuth: true,
@@ -47,10 +47,14 @@ userRouter.get(
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     if (!req.user.isRole(Role.Admin)) {
-      return res.status(403).json({ message: 'forbidden' });
+      res.status(403).json({ message: 'forbidden' });
+      // safe metrics call after sending response
+      try { metrics.userList(false); } catch {}
+      return;
     }
     const users = await DB.getUsers(req.user);
     res.json(users);
+    try { metrics.userList(true); } catch {}
   })
 );
 
@@ -60,25 +64,31 @@ userRouter.delete(
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     if (!req.user.isRole(Role.Admin)) {
-      return res.status(403).json({ message: 'forbidden' });
+      res.status(403).json({ message: 'forbidden' });
+      try { metrics.userDelete(false); } catch {}
+      return;
     }
 
     const userId = Number(req.params.userId);
     const deleted = await DB.deleteUser(userId);
     if (!deleted) {
-      return res.status(404).json({ message: 'not found' });
+      res.status(404).json({ message: 'not found' });
+      try { metrics.userDelete(false); } catch {}
+      return;
     }
+
     res.status(204).send();
+    try { metrics.userDelete(true); } catch {}
   })
 );
 
-
-// getUser
+// getUser (authenticated)
 userRouter.get(
   '/me',
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     res.json(req.user);
+    try { metrics.userFetch(true); } catch {}
   })
 );
 
@@ -91,12 +101,16 @@ userRouter.put(
     const userId = Number(req.params.userId);
     const user = req.user;
     if (user.id !== userId && !user.isRole(Role.Admin)) {
-      return res.status(403).json({ message: 'unauthorized' });
+      res.status(403).json({ message: 'unauthorized' });
+      try { metrics.userUpdate(false); } catch {}
+      return;
     }
 
     const updatedUser = await DB.updateUser(userId, name, email, password);
     const auth = await setAuth(updatedUser);
+
     res.json({ user: updatedUser, token: auth });
+    try { metrics.userUpdate(true); } catch {}
   })
 );
 

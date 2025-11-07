@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config.js');
 const { asyncHandler } = require('../endpointHelper.js');
 const { DB, Role } = require('../database/database.js');
+const metrics = require('../metricsGenerator.js');
 
 const authRouter = express.Router();
 
@@ -75,10 +76,18 @@ authRouter.put(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await DB.getUser(email, password);
-    const auth = await setAuth(user);
-    res.json({ user: user, token: auth });
+
+    if (user) {
+      const auth = await setAuth(user);
+      metrics.recordAuthAttempt(true);
+      res.json({ user: user, token: auth });
+    } else {
+      metrics.recordAuthAttempt(false); 
+      res.status(401).json({ message: 'invalid email or password' });
+    }
   })
 );
+
 
 // logout
 authRouter.delete(
@@ -86,9 +95,11 @@ authRouter.delete(
   authRouter.authenticateToken,
   asyncHandler(async (req, res) => {
     await clearAuth(req);
+    metrics.recordAuthAttempt(true);
     res.json({ message: 'logout successful' });
   })
 );
+
 
 async function setAuth(user) {
   const token = jwt.sign(user, config.jwtSecret);
