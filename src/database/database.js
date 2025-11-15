@@ -4,78 +4,53 @@ const config = require('../config.js');
 const { StatusCodeError } = require('../endpointHelper.js');
 const { Role } = require('../model/model.js');
 const dbModel = require('./dbModel.js');
-const logger = require('../logger.js'); // import logger
-
+const logger = require('../logger.js');
 class DB {
   constructor() {
     this.initialized = this.initializeDatabase();
   }
 
-  // Centralized query wrapper to log every SQL query
-  async query(connection, sql, params) {
+  async getMenu() {
+    const connection = await this.getConnection();
     try {
-      logger.sendLogToGrafana({
-        type: 'db-query',
-        sql,
-        params: params || [],
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.error('Failed to log DB query:', err);
+      const rows = await this.query(connection, `SELECT * FROM menu`);
+      return rows;
+    } finally {
+      connection.end();
     }
-
-    const [results] = await connection.execute(sql, params);
-    return results;
   }
 
-  async getConnection() {
-    await this.initialized;
-    return this._getConnection();
+  async addMenuItem(item) {
+    const connection = await this.getConnection();
+    try {
+      const addResult = await this.query(connection, `INSERT INTO menu (title, description, image, price) VALUES (?, ?, ?, ?)`, [item.title, item.description, item.image, item.price]);
+      return { ...item, id: addResult.insertId };
+    } finally {
+      connection.end();
+    }
   }
-
-  async _getConnection(setUse = true) {
-    const connection = await mysql.createConnection({
-      host: config.db.connection.host,
-      user: config.db.connection.user,
-      password: config.db.connection.password,
-      connectTimeout: config.db.connection.connectTimeout,
-      decimalNumbers: true,
-    });
-    if (setUse) await connection.query(`USE ${config.db.connection.database}`);
-    return connection;
-  }
-
-  // ------------------ USER / AUTH ------------------
 
   async addUser(user) {
     const connection = await this.getConnection();
     try {
       const hashedPassword = await bcrypt.hash(user.password, 10);
-      const userResult = await this.query(
-        connection,
-        `INSERT INTO user (name, email, password) VALUES (?, ?, ?)`,
-        [user.name, user.email, hashedPassword]
-      );
-      const userId = userResult.insertId;
 
+      const userResult = await this.query(connection, `INSERT INTO user (name, email, password) VALUES (?, ?, ?)`, [user.name, user.email, hashedPassword]);
+      const userId = userResult.insertId;
       for (const role of user.roles) {
-        if (role.role === Role.Franchisee) {
-          const franchiseId = await this.getID(connection, 'name', role.object, 'franchise');
-          await this.query(connection, `INSERT INTO userRole (userId, role, objectId) VALUES (?, ?, ?)`, [userId, role.role, franchiseId]);
-        } else {
-          await this.query(connection, `INSERT INTO userRole (userId, role, objectId) VALUES (?, ?, ?)`, [userId, role.role, 0]);
+        switch (role.role) {
+          case Role.Franchisee: {
+            const franchiseId = await this.getID(connection, 'name', role.object, 'franchise');
+            await this.query(connection, `INSERT INTO userRole (userId, role, objectId) VALUES (?, ?, ?)`, [userId, role.role, franchiseId]);
+            break;
+          }
+          default: {
+            await this.query(connection, `INSERT INTO userRole (userId, role, objectId) VALUES (?, ?, ?)`, [userId, role.role, 0]);
+            break;
+          }
         }
       }
-
-      const sanitizedUser = { ...user, id: userId, password: undefined };
-      logger.sendLogToGrafana({
-        type: 'db-insert',
-        table: 'user',
-        insertedItem: sanitizedUser,
-        timestamp: new Date().toISOString(),
-      });
-
-      return sanitizedUser;
+      return { ...user, id: userId, password: undefined };
     } finally {
       connection.end();
     }
@@ -86,24 +61,16 @@ class DB {
     try {
       const userResult = await this.query(connection, `SELECT * FROM user WHERE email=?`, [email]);
       const user = userResult[0];
-
       if (!user || (password && !(await bcrypt.compare(password, user.password)))) {
         throw new StatusCodeError('unknown user', 404);
       }
 
       const roleResult = await this.query(connection, `SELECT * FROM userRole WHERE userId=?`, [user.id]);
-      const roles = roleResult.map((r) => ({ objectId: r.objectId || undefined, role: r.role }));
-
-      logger.sendLogToGrafana({
-        type: 'db-select',
-        table: 'user',
-        query: `SELECT * FROM user WHERE email=?`,
-        params: [email],
-        resultId: user.id,
-        timestamp: new Date().toISOString(),
+      const roles = roleResult.map((r) => {
+        return { objectId: r.objectId || undefined, role: r.role };
       });
 
-      return { ...user, roles, password: undefined };
+      return { ...user, roles: roles, password: undefined };
     } finally {
       connection.end();
     }
@@ -117,58 +84,17 @@ class DB {
         const hashedPassword = await bcrypt.hash(password, 10);
         params.push(`password='${hashedPassword}'`);
       }
-      if (email) params.push(`email='${email}'`);
-      if (name) params.push(`name='${name}'`);
-
+      if (email) {
+        params.push(`email='${email}'`);
+      }
+      if (name) {
+        params.push(`name='${name}'`);
+      }
       if (params.length > 0) {
         const query = `UPDATE user SET ${params.join(', ')} WHERE id=${userId}`;
         await this.query(connection, query);
       }
-
-      const updatedUser = await this.getUser(email, password);
-      logger.sendLogToGrafana({
-        type: 'db-update',
-        table: 'user',
-        updatedId: userId,
-        updatedFields: { name, email, password: password ? '[sanitized]' : undefined },
-        timestamp: new Date().toISOString(),
-      });
-
-      return updatedUser;
-    } finally {
-      connection.end();
-    }
-  }
-
-  async deleteUser(userId) {
-    const connection = await this.getConnection();
-    try {
-      await connection.beginTransaction();
-      try {
-        await this.query(connection, `DELETE FROM userRole WHERE userId = ?`, [userId]);
-        await this.query(connection, `DELETE FROM auth WHERE userId = ?`, [userId]);
-        const result = await this.query(connection, `DELETE FROM user WHERE id = ?`, [userId]);
-        await connection.commit();
-
-        logger.sendLogToGrafana({
-          type: 'db-delete',
-          table: 'user',
-          deletedId: userId,
-          timestamp: new Date().toISOString(),
-        });
-
-        return result && result.affectedRows > 0;
-      } catch (e) {
-        await connection.rollback();
-        logger.sendLogToGrafana({
-          type: 'db-error',
-          message: 'Failed to delete user',
-          error: e.message,
-          userId,
-          timestamp: new Date().toISOString(),
-        });
-        throw new StatusCodeError('unable to delete user', 500);
-      }
+      return this.getUser(email, password);
     } finally {
       connection.end();
     }
@@ -179,29 +105,6 @@ class DB {
     const connection = await this.getConnection();
     try {
       await this.query(connection, `INSERT INTO auth (token, userId) VALUES (?, ?) ON DUPLICATE KEY UPDATE token=token`, [token, userId]);
-      logger.sendLogToGrafana({
-        type: 'db-insert',
-        table: 'auth',
-        userId,
-        token: '[sanitized]',
-        timestamp: new Date().toISOString(),
-      });
-    } finally {
-      connection.end();
-    }
-  }
-
-  async logoutUser(token) {
-    token = this.getTokenSignature(token);
-    const connection = await this.getConnection();
-    try {
-      await this.query(connection, `DELETE FROM auth WHERE token=?`, [token]);
-      logger.sendLogToGrafana({
-        type: 'db-delete',
-        table: 'auth',
-        token: '[sanitized]',
-        timestamp: new Date().toISOString(),
-      });
     } finally {
       connection.end();
     }
@@ -218,42 +121,16 @@ class DB {
     }
   }
 
-  // ------------------ MENU ------------------
-
-  async getMenu() {
+  async logoutUser(token) {
+    token = this.getTokenSignature(token);
     const connection = await this.getConnection();
     try {
-      const rows = await this.query(connection, `SELECT * FROM menu`);
-      return rows;
+      await this.query(connection, `DELETE FROM auth WHERE token=?`, [token]);
     } finally {
       connection.end();
     }
   }
 
-  async addMenuItem(item) {
-    const connection = await this.getConnection();
-    try {
-      const addResult = await this.query(
-        connection,
-        `INSERT INTO menu (title, description, image, price) VALUES (?, ?, ?, ?)`,
-        [item.title, item.description, item.image, item.price]
-      );
-
-      const insertedItem = { ...item, id: addResult.insertId };
-      logger.sendLogToGrafana({
-        type: 'db-insert',
-        table: 'menu',
-        insertedItem,
-        timestamp: new Date().toISOString(),
-      });
-
-      return insertedItem;
-    } finally {
-      connection.end();
-    }
-  }
-
-  // ------------------ ORDERS ------------------
 
   async getOrders(user, page = 1) {
     const connection = await this.getConnection();
@@ -261,20 +138,10 @@ class DB {
       const offset = this.getOffset(page, config.db.listPerPage);
       const orders = await this.query(connection, `SELECT id, franchiseId, storeId, date FROM dinerOrder WHERE dinerId=? LIMIT ${offset},${config.db.listPerPage}`, [user.id]);
       for (const order of orders) {
-        const items = await this.query(connection, `SELECT id, menuId, description, price FROM orderItem WHERE orderId=?`, [order.id]);
+        let items = await this.query(connection, `SELECT id, menuId, description, price FROM orderItem WHERE orderId=?`, [order.id]);
         order.items = items;
       }
-
-      logger.sendLogToGrafana({
-        type: 'db-select',
-        table: 'dinerOrder',
-        userId: user.id,
-        page,
-        resultCount: orders.length,
-        timestamp: new Date().toISOString(),
-      });
-
-      return { dinerId: user.id, orders, page };
+      return { dinerId: user.id, orders: orders, page };
     } finally {
       connection.end();
     }
@@ -285,35 +152,23 @@ class DB {
     try {
       const orderResult = await this.query(connection, `INSERT INTO dinerOrder (dinerId, franchiseId, storeId, date) VALUES (?, ?, ?, now())`, [user.id, order.franchiseId, order.storeId]);
       const orderId = orderResult.insertId;
-
       for (const item of order.items) {
         const menuId = await this.getID(connection, 'id', item.menuId, 'menu');
         await this.query(connection, `INSERT INTO orderItem (orderId, menuId, description, price) VALUES (?, ?, ?, ?)`, [orderId, menuId, item.description, item.price]);
       }
-
-      logger.sendLogToGrafana({
-        type: 'db-insert',
-        table: 'dinerOrder',
-        orderId,
-        dinerId: user.id,
-        timestamp: new Date().toISOString(),
-      });
-
       return { ...order, id: orderId };
     } finally {
       connection.end();
     }
   }
 
-  // ------------------ FRANCHISE ------------------
-
   async createFranchise(franchise) {
     const connection = await this.getConnection();
     try {
       for (const admin of franchise.admins) {
         const adminUser = await this.query(connection, `SELECT id, name FROM user WHERE email=?`, [admin.email]);
-        if (adminUser.length === 0) {
-          throw new StatusCodeError(`unknown user for franchise admin ${admin.email}`, 404);
+        if (adminUser.length == 0) {
+          throw new StatusCodeError(`unknown user for franchise admin ${admin.email} provided`, 404);
         }
         admin.id = adminUser[0].id;
         admin.name = adminUser[0].name;
@@ -325,13 +180,6 @@ class DB {
       for (const admin of franchise.admins) {
         await this.query(connection, `INSERT INTO userRole (userId, role, objectId) VALUES (?, ?, ?)`, [admin.id, Role.Franchisee, franchise.id]);
       }
-
-      logger.sendLogToGrafana({
-        type: 'db-insert',
-        table: 'franchise',
-        franchiseId: franchise.id,
-        timestamp: new Date().toISOString(),
-      });
 
       return franchise;
     } finally {
@@ -348,22 +196,8 @@ class DB {
         await this.query(connection, `DELETE FROM userRole WHERE objectId=?`, [franchiseId]);
         await this.query(connection, `DELETE FROM franchise WHERE id=?`, [franchiseId]);
         await connection.commit();
-
-        logger.sendLogToGrafana({
-          type: 'db-delete',
-          table: 'franchise',
-          franchiseId,
-          timestamp: new Date().toISOString(),
-        });
-      } catch (e) {
+      } catch {
         await connection.rollback();
-        logger.sendLogToGrafana({
-          type: 'db-error',
-          message: 'Failed to delete franchise',
-          franchiseId,
-          error: e.message,
-          timestamp: new Date().toISOString(),
-        });
         throw new StatusCodeError('unable to delete franchise', 500);
       }
     } finally {
@@ -373,13 +207,17 @@ class DB {
 
   async getFranchises(authUser, page = 0, limit = 10, nameFilter = '*') {
     const connection = await this.getConnection();
+
     const offset = page * limit;
     nameFilter = nameFilter.replace(/\*/g, '%');
 
     try {
       let franchises = await this.query(connection, `SELECT id, name FROM franchise WHERE name LIKE ? LIMIT ${limit + 1} OFFSET ${offset}`, [nameFilter]);
+
       const more = franchises.length > limit;
-      if (more) franchises = franchises.slice(0, limit);
+      if (more) {
+        franchises = franchises.slice(0, limit);
+      }
 
       for (const franchise of franchises) {
         if (authUser?.isRole(Role.Admin)) {
@@ -388,15 +226,6 @@ class DB {
           franchise.stores = await this.query(connection, `SELECT id, name FROM store WHERE franchiseId=?`, [franchise.id]);
         }
       }
-
-      logger.sendLogToGrafana({
-        type: 'db-select',
-        table: 'franchise',
-        page,
-        resultCount: franchises.length,
-        timestamp: new Date().toISOString(),
-      });
-
       return [franchises, more];
     } finally {
       connection.end();
@@ -407,20 +236,15 @@ class DB {
     const connection = await this.getConnection();
     try {
       let franchiseIds = await this.query(connection, `SELECT objectId FROM userRole WHERE role='franchisee' AND userId=?`, [userId]);
-      if (franchiseIds.length === 0) return [];
+      if (franchiseIds.length === 0) {
+        return [];
+      }
 
       franchiseIds = franchiseIds.map((v) => v.objectId);
       const franchises = await this.query(connection, `SELECT id, name FROM franchise WHERE id in (${franchiseIds.join(',')})`);
-      for (const franchise of franchises) await this.getFranchise(franchise);
-
-      logger.sendLogToGrafana({
-        type: 'db-select',
-        table: 'franchise',
-        userId,
-        resultCount: franchises.length,
-        timestamp: new Date().toISOString(),
-      });
-
+      for (const franchise of franchises) {
+        await this.getFranchise(franchise);
+      }
       return franchises;
     } finally {
       connection.end();
@@ -430,28 +254,9 @@ class DB {
   async getFranchise(franchise) {
     const connection = await this.getConnection();
     try {
-      franchise.admins = await this.query(
-        connection,
-        `SELECT u.id, u.name, u.email FROM userRole AS ur JOIN user AS u ON u.id=ur.userId WHERE ur.objectId=? AND ur.role='franchisee'`,
-        [franchise.id]
-      );
+      franchise.admins = await this.query(connection, `SELECT u.id, u.name, u.email FROM userRole AS ur JOIN user AS u ON u.id=ur.userId WHERE ur.objectId=? AND ur.role='franchisee'`, [franchise.id]);
 
-      franchise.stores = await this.query(
-        connection,
-        `SELECT s.id, s.name, COALESCE(SUM(oi.price), 0) AS totalRevenue
-         FROM dinerOrder AS do
-         JOIN orderItem AS oi ON do.id=oi.orderId
-         RIGHT JOIN store AS s ON s.id=do.storeId
-         WHERE s.franchiseId=? GROUP BY s.id`,
-        [franchise.id]
-      );
-
-      logger.sendLogToGrafana({
-        type: 'db-select',
-        table: 'franchise-details',
-        franchiseId: franchise.id,
-        timestamp: new Date().toISOString(),
-      });
+      franchise.stores = await this.query(connection, `SELECT s.id, s.name, COALESCE(SUM(oi.price), 0) AS totalRevenue FROM dinerOrder AS do JOIN orderItem AS oi ON do.id=oi.orderId RIGHT JOIN store AS s ON s.id=do.storeId WHERE s.franchiseId=? GROUP BY s.id`, [franchise.id]);
 
       return franchise;
     } finally {
@@ -463,16 +268,7 @@ class DB {
     const connection = await this.getConnection();
     try {
       const insertResult = await this.query(connection, `INSERT INTO store (franchiseId, name) VALUES (?, ?)`, [franchiseId, store.name]);
-      const inserted = { id: insertResult.insertId, franchiseId, name: store.name };
-
-      logger.sendLogToGrafana({
-        type: 'db-insert',
-        table: 'store',
-        inserted,
-        timestamp: new Date().toISOString(),
-      });
-
-      return inserted;
+      return { id: insertResult.insertId, franchiseId, name: store.name };
     } finally {
       connection.end();
     }
@@ -482,34 +278,62 @@ class DB {
     const connection = await this.getConnection();
     try {
       await this.query(connection, `DELETE FROM store WHERE franchiseId=? AND id=?`, [franchiseId, storeId]);
-      logger.sendLogToGrafana({
-        type: 'db-delete',
-        table: 'store',
-        franchiseId,
-        storeId,
-        timestamp: new Date().toISOString(),
-      });
     } finally {
       connection.end();
     }
   }
 
-  // ------------------ UTILITY ------------------
-
   getOffset(currentPage = 1, listPerPage) {
-    return (currentPage - 1) * listPerPage;
+    return (currentPage - 1) * [listPerPage];
   }
 
   getTokenSignature(token) {
     const parts = token.split('.');
-    if (parts.length > 2) return parts[2];
+    if (parts.length > 2) {
+      return parts[2];
+    }
     return '';
   }
 
+  async query(connection, sql, params) {
+    logger.logDB(sql, params);
+    try {
+      const [results] = await connection.execute(sql, params);
+      return results;
+    } catch (err) {
+      logger.logError(err);
+      throw err;
+    }
+  }
+
   async getID(connection, key, value, table) {
-    const [rows] = await connection.execute(`SELECT id FROM ${table} WHERE ${key}=?`, [value]);
-    if (rows.length > 0) return rows[0].id;
+    const rows = await this.query(connection, `SELECT id FROM ${table} WHERE ${key}=?`, [value]);
+    if (rows.length > 0) {
+      return rows[0].id;
+    }
     throw new Error('No ID found');
+  }
+
+  async getConnection() {
+    // Make sure the database is initialized before trying to get a connection.
+    await this.initialized;
+    return this._getConnection();
+  }
+
+  async _getConnection(setUse = true) {
+    const connection = await mysql.createConnection({
+      host: config.db.connection.host,
+      user: config.db.connection.user,
+      password: config.db.connection.password,
+      connectTimeout: config.db.connection.connectTimeout,
+      decimalNumbers: true,
+    });
+    if (setUse) {
+      const useDatabaseSql = `USE ${config.db.connection.database}`;
+      logger.logDB(useDatabaseSql);
+      await connection.query(useDatabaseSql);
+    }
+    return connection;
   }
 
   async initializeDatabase() {
@@ -519,12 +343,20 @@ class DB {
         const dbExists = await this.checkDatabaseExists(connection);
         console.log(dbExists ? 'Database exists' : 'Database does not exist, creating it');
 
-        await connection.query(`CREATE DATABASE IF NOT EXISTS ${config.db.connection.database}`);
-        await connection.query(`USE ${config.db.connection.database}`);
+        const createDbSql = `CREATE DATABASE IF NOT EXISTS ${config.db.connection.database}`;
+        logger.logDB(createDbSql);
+        await connection.query(createDbSql);
 
-        if (!dbExists) console.log('Successfully created database');
+        const useDbSql = `USE ${config.db.connection.database}`;
+        logger.logDB(useDbSql);
+        await connection.query(useDbSql);
+
+        if (!dbExists) {
+          console.log('Successfully created database');
+        }
 
         for (const statement of dbModel.tableCreateStatements) {
+          logger.logDB(statement);
           await connection.query(statement);
         }
 
@@ -536,23 +368,63 @@ class DB {
         connection.end();
       }
     } catch (err) {
-      logger.sendLogToGrafana({
-        type: 'db-error',
-        message: 'Error initializing database',
-        exception: err.message,
-        connection: config.db.connection,
-        timestamp: new Date().toISOString(),
-      });
+      console.error(JSON.stringify({ message: 'Error initializing database', exception: err.message, connection: config.db.connection }));
     }
   }
 
   async checkDatabaseExists(connection) {
-    const [rows] = await connection.execute(
-      `SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?`,
-      [config.db.connection.database]
-    );
+    const rows = await this.query(connection, `SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?`, [config.db.connection.database]);
     return rows.length > 0;
   }
+
+  async getUsers(authUser) {
+  const connection = await this.getConnection();
+  try {
+    // grab all users
+    let users = await this.query(
+      connection,
+      `SELECT id, name, email FROM user ORDER BY id`
+    );
+
+    // include roles if admin (optional)
+    if (authUser?.isRole && authUser.isRole(Role.Admin)) {
+      for (const u of users) {
+        const roles = await this.query(
+          connection,
+          `SELECT role, objectId FROM userRole WHERE userId=?`,
+          [u.id]
+        );
+        u.roles = roles.map(r => ({ role: r.role, objectId: r.objectId }));
+      }
+    }
+
+    return users;
+  } finally {
+    connection.end();
+  }
+}
+
+
+async deleteUser(userId) {
+  const connection = await this.getConnection();
+  try {
+    await connection.beginTransaction();
+    try {
+      await this.query(connection, `DELETE FROM userRole WHERE userId = ?`, [userId]);
+      await this.query(connection, `DELETE FROM auth WHERE userId = ?`, [userId]);
+      const result = await this.query(connection, `DELETE FROM user WHERE id = ?`, [userId]);
+      await connection.commit();
+      return result && result.affectedRows > 0;
+    } catch (e) {
+      await connection.rollback();
+      console.error('deleteUser failed:', e);
+      throw new StatusCodeError('unable to delete user', 500);
+    }
+  } finally {
+    connection.end();
+  }
+}
+
 }
 
 const db = new DB();
