@@ -1,8 +1,13 @@
 // src/logger.js
-const fetch = require('node-fetch'); // Use node-fetch for Node.js
+const fetch = require('node-fetch'); // Node.js fetch
 const config = require('./config.js');
 
 class Logger {
+  constructor() {
+    // Automatically catch unhandled exceptions/rejections
+    this.catchErrors();
+  }
+
   /**
    * Express middleware to log all HTTP requests and responses
    */
@@ -37,10 +42,7 @@ class Logger {
    * Log database query
    */
   dbQuery(query, params = []) {
-    const logData = {
-      query,
-      params,
-    };
+    const logData = { query, params };
     this.log('info', 'db', logData);
   }
 
@@ -61,9 +63,10 @@ class Logger {
   log(level, type, logData) {
     const labels = {
       component: config.logging.source,
-      level: level,
-      type: type,
+      level,
+      type,
     };
+
     const values = [this.nowString(), JSON.stringify(logData)];
     const logEvent = { streams: [{ stream: labels, values: [values] }] };
 
@@ -91,8 +94,9 @@ class Logger {
    */
   sanitize(data) {
     if (!data) return '';
-    return data.replace(/"password"\s*:\s*"[^"]*"/gi, '"password":"*****"')
-               .replace(/"token"\s*:\s*"[^"]*"/gi, '"token":"*****"');
+    return data
+      .replace(/"password"\s*:\s*"[^"]*"/gi, '"password":"*****"')
+      .replace(/"token"\s*:\s*"[^"]*"/gi, '"token":"*****"');
   }
 
   /**
@@ -110,10 +114,11 @@ class Logger {
       });
 
       if (!res.ok) {
-        console.error('Failed to send log to Grafana', await res.text());
+        const text = await res.text();
+        console.error('Failed to send log to Grafana:', text);
       }
     } catch (err) {
-      console.error('Error sending log to Grafana', err);
+      console.error('Error sending log to Grafana:', err);
     }
   }
 
